@@ -6,6 +6,8 @@
 const http = require('http');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
 
 // 配置（支持环境变量）
 const PORT = process.env.PORT || 3000;
@@ -131,6 +133,23 @@ const server = http.createServer(async (req, res) => {
       'Access-Control-Allow-Headers': 'Content-Type, Authorization'
     });
     res.end();
+    return;
+  }
+
+  // ========== 首页和静态文件 ==========
+  if (url === '/' || url === '/index.html') {
+    const indexPath = path.join(__dirname, 'index.html');
+    fs.readFile(indexPath, (err, data) => {
+      if (err) {
+        res.writeHead(404);
+        res.end('Not found');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8'
+      });
+      res.end(data);
+    });
     return;
   }
 
