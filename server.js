@@ -1,49 +1,86 @@
 /**
  * Vidu批量生成工具 - 后台管理服务
- * 支持本地运行和云平台部署
+ * 使用 MongoDB Atlas 持久化存储
  */
 
 const http = require('http');
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 
 // 配置（支持环境变量）
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, 'data.json');
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/vidu-admin';
 
 // 管理员账号（优先使用环境变量）
 const ADMIN = {
   username: process.env.ADMIN_USER || 'admin',
-  password: process.env.ADMIN_PASS || 'admin123'  // 部署后请修改
+  password: process.env.ADMIN_PASS || 'admin123'
 };
+
+// MongoDB 连接
+let isConnected = false;
+
+async function connectDB() {
+  // 检查 mongoose 连接状态
+  if (mongoose.connection.readyState === 1) {
+    isConnected = true;
+    return;
+  }
+  
+  try {
+    console.log('正在连接 MongoDB...');
+    await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+      maxPoolSize: 10,
+      minPoolSize: 1,
+      connectTimeoutMS: 10000
+    });
+    isConnected = true;
+    console.log('MongoDB 连接成功');
+  } catch (e) {
+    console.error('MongoDB 连接失败:', e.message);
+    isConnected = false;
+  }
+}
+
+// 监听连接事件
+mongoose.connection.on('disconnected', () => {
+  console.log('MongoDB 连接断开');
+  isConnected = false;
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('MongoDB 连接错误:', err);
+  isConnected = false;
+});
+
+mongoose.connection.on('reconnected', () => {
+  console.log('MongoDB 重新连接成功');
+  isConnected = true;
+});
+
+// 定义 Schema
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  expireTime: { type: Number, required: true },
+  status: { type: Number, default: 1 },
+  createdAt: { type: Number, default: Date.now }
+});
+
+const adminSessionSchema = new mongoose.Schema({
+  token: { type: String, required: true, unique: true },
+  createdAt: { type: Number, default: Date.now }
+});
+
+// 创建模型
+const User = mongoose.model('User', userSchema);
+const AdminSession = mongoose.model('AdminSession', adminSessionSchema);
 
 // 生成Token
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
-}
-
-// 读取数据
-function loadData() {
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    }
-  } catch (e) {
-    console.error('读取数据失败:', e);
-  }
-  return { users: [] };
-}
-
-// 保存数据
-function saveData(data) {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-    return true;
-  } catch (e) {
-    console.error('保存数据失败:', e);
-    return false;
-  }
 }
 
 // 解析请求体
@@ -73,11 +110,12 @@ function sendJson(res, data) {
 }
 
 // 检查管理员Token
-function checkAdminToken(req) {
+async function checkAdminToken(req) {
   const auth = req.headers.authorization || '';
   const token = auth.replace('Bearer ', '');
-  const data = loadData();
-  return data.adminToken === token;
+  
+  const session = await AdminSession.findOne({ token });
+  return !!session;
 }
 
 // 创建HTTP服务器
@@ -96,6 +134,9 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 确保数据库连接
+  await connectDB();
+
   // 路由处理
   try {
     // ========== 管理员登录 ==========
@@ -104,9 +145,10 @@ const server = http.createServer(async (req, res) => {
       
       if (body.username === ADMIN.username && body.password === ADMIN.password) {
         const token = generateToken();
-        const data = loadData();
-        data.adminToken = token;
-        saveData(data);
+        
+        // 删除旧session，创建新session
+        await AdminSession.deleteMany({});
+        await AdminSession.create({ token });
         
         sendJson(res, { success: true, token });
       } else {
@@ -117,44 +159,43 @@ const server = http.createServer(async (req, res) => {
 
     // ========== 检查管理员登录状态 ==========
     if (url === '/api/admin/check' && method === 'GET') {
-      sendJson(res, { success: checkAdminToken(req) });
+      const isValid = await checkAdminToken(req);
+      sendJson(res, { success: isValid });
       return;
     }
 
     // ========== 管理员退出 ==========
     if (url === '/api/admin/logout' && method === 'POST') {
-      if (checkAdminToken(req)) {
-        const data = loadData();
-        delete data.adminToken;
-        saveData(data);
-      }
+      const auth = req.headers.authorization || '';
+      const token = auth.replace('Bearer ', '');
+      await AdminSession.deleteOne({ token });
       sendJson(res, { success: true });
       return;
     }
 
     // ========== 获取用户列表 ==========
     if (url === '/api/admin/users' && method === 'GET') {
-      if (!checkAdminToken(req)) {
+      if (!await checkAdminToken(req)) {
         sendJson(res, { success: false, message: '未登录' });
         return;
       }
       
-      const data = loadData();
-      const users = (data.users || []).map(u => ({
-        id: u.id,
+      const users = await User.find({}, { password: 0 });
+      const userList = users.map(u => ({
+        id: u._id.toString(),
         username: u.username,
         expireTime: u.expireTime,
         status: u.status,
         createdAt: u.createdAt
       }));
       
-      sendJson(res, { success: true, users });
+      sendJson(res, { success: true, users: userList });
       return;
     }
 
     // ========== 添加用户 ==========
     if (url === '/api/admin/users' && method === 'POST') {
-      if (!checkAdminToken(req)) {
+      if (!await checkAdminToken(req)) {
         sendJson(res, { success: false, message: '未登录' });
         return;
       }
@@ -167,34 +208,29 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       
-      const data = loadData();
-      
       // 检查用户名是否已存在
-      if (data.users.some(u => u.username === username)) {
+      const existing = await User.findOne({ username });
+      if (existing) {
         sendJson(res, { success: false, message: '用户名已存在' });
         return;
       }
       
       // 创建用户
-      const user = {
-        id: Date.now().toString(),
+      const user = await User.create({
         username,
-        password,  // 生产环境建议加密
+        password,
         expireTime: Date.now() + expireDays * 24 * 60 * 60 * 1000,
         status: 1,
         createdAt: Date.now()
-      };
+      });
       
-      data.users.push(user);
-      saveData(data);
-      
-      sendJson(res, { success: true, message: '添加成功', user: { id: user.id, username: user.username } });
+      sendJson(res, { success: true, message: '添加成功', user: { id: user._id.toString(), username: user.username } });
       return;
     }
 
     // ========== 修改用户 ==========
     if (url.startsWith('/api/admin/users/') && method === 'PUT') {
-      if (!checkAdminToken(req)) {
+      if (!await checkAdminToken(req)) {
         sendJson(res, { success: false, message: '未登录' });
         return;
       }
@@ -203,61 +239,49 @@ const server = http.createServer(async (req, res) => {
       const body = await parseBody(req);
       const { password, expireDays, status } = body;
       
-      const data = loadData();
-      const userIndex = data.users.findIndex(u => u.id === userId);
+      const updateData = {};
+      if (password) updateData.password = password;
+      if (expireDays) updateData.expireTime = Date.now() + expireDays * 24 * 60 * 60 * 1000;
+      if (status !== undefined) updateData.status = status;
       
-      if (userIndex === -1) {
-        sendJson(res, { success: false, message: '用户不存在' });
-        return;
-      }
+      await User.findByIdAndUpdate(userId, updateData);
       
-      // 更新用户信息
-      if (password) {
-        data.users[userIndex].password = password;
-      }
-      if (expireDays !== undefined) {
-        data.users[userIndex].expireTime = Date.now() + expireDays * 24 * 60 * 60 * 1000;
-      }
-      if (status !== undefined) {
-        data.users[userIndex].status = status;
-      }
-      
-      saveData(data);
       sendJson(res, { success: true, message: '修改成功' });
       return;
     }
 
     // ========== 删除用户 ==========
     if (url.startsWith('/api/admin/users/') && method === 'DELETE') {
-      if (!checkAdminToken(req)) {
+      if (!await checkAdminToken(req)) {
         sendJson(res, { success: false, message: '未登录' });
         return;
       }
       
       const userId = url.split('/')[4];
-      const data = loadData();
-      
-      data.users = data.users.filter(u => u.id !== userId);
-      saveData(data);
+      await User.findByIdAndDelete(userId);
       
       sendJson(res, { success: true, message: '删除成功' });
       return;
     }
 
-    // ========== 用户登录（给插件使用） ==========
+    // ========== 用户登录验证 ==========
     if (url === '/api/login' && method === 'POST') {
       const body = await parseBody(req);
       const { username, password } = body;
       
-      const data = loadData();
-      const user = data.users.find(u => u.username === username && u.password === password);
+      if (!username || !password) {
+        sendJson(res, { success: false, message: '请输入用户名和密码' });
+        return;
+      }
+      
+      const user = await User.findOne({ username, password });
       
       if (!user) {
         sendJson(res, { success: false, message: '用户名或密码错误' });
         return;
       }
       
-      if (user.status === 0) {
+      if (user.status !== 1) {
         sendJson(res, { success: false, message: '账号已被禁用' });
         return;
       }
@@ -267,63 +291,66 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       
-      const token = generateToken();
-      user.token = token;
-      saveData(data);
-      
-      sendJson(res, {
-        success: true,
-        token,
+      sendJson(res, { 
+        success: true, 
+        token: generateToken(),
         expireTime: user.expireTime,
-        userInfo: { name: user.username }
+        username: user.username
       });
       return;
     }
 
-    // ========== 用户验证（给插件使用） ==========
+    // ========== Token验证 ==========
     if (url === '/api/verify' && method === 'POST') {
-      const auth = req.headers.authorization || '';
-      const token = auth.replace('Bearer ', '');
+      const body = await parseBody(req);
+      const { username } = body;
       
-      const data = loadData();
-      const user = data.users.find(u => u.token === token);
-      
-      if (!user) {
-        sendJson(res, { success: false, valid: false });
+      if (!username) {
+        sendJson(res, { success: false, message: '缺少用户名' });
         return;
       }
       
-      const valid = user.status === 1 && Date.now() <= user.expireTime;
-      sendJson(res, { success: valid, valid });
-      return;
-    }
-
-    // ========== 静态文件 ==========
-    if (url === '/' || url === '/index.html') {
-      const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(html);
+      const user = await User.findOne({ username });
+      
+      if (!user) {
+        sendJson(res, { success: false, message: '用户不存在' });
+        return;
+      }
+      
+      if (user.status !== 1) {
+        sendJson(res, { success: false, message: '账号已被禁用' });
+        return;
+      }
+      
+      if (Date.now() > user.expireTime) {
+        sendJson(res, { success: false, message: '账号已过期' });
+        return;
+      }
+      
+      sendJson(res, { 
+        success: true, 
+        expireTime: user.expireTime
+      });
       return;
     }
 
     // 404
     sendJson(res, { success: false, message: '接口不存在' });
 
-  } catch (error) {
-    console.error('服务器错误:', error);
+  } catch (e) {
+    console.error('请求处理错误:', e);
     sendJson(res, { success: false, message: '服务器错误' });
   }
 });
 
 // 启动服务器
-server.listen(PORT, () => {
-  console.log('========================================');
-  console.log('  Vidu批量生成工具 - 后台管理系统');
-  console.log('========================================');
-  console.log(`  服务地址: http://localhost:${PORT}`);
-  console.log(`  管理员账号: ${ADMIN.username}`);
-  console.log(`  管理员密码: ${ADMIN.password}`);
-  console.log('========================================');
-  console.log('  提示: 请修改 ADMIN 配置更改默认密码');
-  console.log('========================================');
-});
+async function start() {
+  await connectDB();
+  
+  server.listen(PORT, () => {
+    console.log(`服务器运行在端口 ${PORT}`);
+    console.log(`管理员账号: ${ADMIN.username}`);
+  });
+}
+
+start();
