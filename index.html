@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vidu批量生成工具 - 后台管理</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+    
+    /* 登录界面 */
+    .login-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    
+    .login-box {
+      background: #1e293b;
+      padding: 40px;
+      border-radius: 16px;
+      width: 400px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+    
+    .login-title {
+      font-size: 24px;
+      font-weight: 600;
+      text-align: center;
+      margin-bottom: 30px;
+      color: #38bdf8;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    .form-group label {
+      display: block;
+      margin-bottom: 8px;
+      color: #94a3b8;
+      font-size: 14px;
+    }
+    
+    .form-group input, .form-group select {
+      width: 100%;
+      padding: 12px 16px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    
+    .form-group input:focus, .form-group select:focus {
+      border-color: #38bdf8;
+    }
+    
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .btn-primary {
+      background: #0ea5e9;
+      color: #fff;
+    }
+    
+    .btn-primary:hover {
+      background: #0284c7;
+    }
+    
+    .btn-success {
+      background: #22c55e;
+      color: #fff;
+    }
+    
+    .btn-success:hover {
+      background: #16a34a;
+    }
+    
+    .btn-danger {
+      background: #ef4444;
+      color: #fff;
+    }
+    
+    .btn-danger:hover {
+      background: #dc2626;
+    }
+    
+    .btn-warning {
+      background: #f59e0b;
+      color: #000;
+    }
+    
+    .btn-sm {
+      padding: 8px 16px;
+      width: auto;
+      font-size: 13px;
+    }
+    
+    .error-msg {
+      color: #f87171;
+      font-size: 14px;
+      text-align: center;
+      margin-bottom: 16px;
+      display: none;
+    }
+    
+    /* 管理界面 */
+    .admin-container {
+      display: none;
+      padding: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    
+    .admin-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 30px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #334155;
+    }
+    
+    .admin-title {
+      font-size: 24px;
+      font-weight: 600;
+      color: #38bdf8;
+    }
+    
+    .admin-content {
+      display: grid;
+      grid-template-columns: 350px 1fr;
+      gap: 30px;
+    }
+    
+    .card {
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 24px;
+    }
+    
+    .card-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 20px;
+      color: #e2e8f0;
+    }
+    
+    .table-container {
+      overflow-x: auto;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    
+    th, td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid #334155;
+    }
+    
+    th {
+      background: #0f172a;
+      font-weight: 600;
+      color: #94a3b8;
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+    
+    td {
+      font-size: 14px;
+    }
+    
+    .status-active {
+      color: #22c55e;
+    }
+    
+    .status-disabled {
+      color: #ef4444;
+    }
+    
+    .status-expired {
+      color: #f59e0b;
+    }
+    
+    .actions {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .api-info {
+      margin-top: 20px;
+      padding: 16px;
+      background: #0f172a;
+      border-radius: 8px;
+    }
+    
+    .api-info h4 {
+      color: #38bdf8;
+      margin-bottom: 12px;
+    }
+    
+    .api-info code {
+      display: block;
+      background: #1e293b;
+      padding: 8px 12px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      font-size: 13px;
+      color: #94a3b8;
+      word-break: break-all;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #64748b;
+    }
+    
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .modal {
+      background: #1e293b;
+      padding: 30px;
+      border-radius: 12px;
+      width: 400px;
+    }
+    
+    .modal-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 20px;
+    }
+    
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 24px;
+    }
+    
+    .modal-actions .btn {
+      flex: 1;
+    }
+  </style>
+</head>
+<body>
+  <!-- 登录界面 -->
+  <div class="login-container" id="loginPage">
+    <div class="login-box">
+      <div class="login-title">🔐 后台管理系统</div>
+      <div class="error-msg" id="loginError"></div>
+      <div class="form-group">
+        <label>管理员账号</label>
+        <input type="text" id="adminUsername" placeholder="请输入管理员账号">
+      </div>
+      <div class="form-group">
+        <label>管理员密码</label>
+        <input type="password" id="adminPassword" placeholder="请输入管理员密码">
+      </div>
+      <button class="btn btn-primary" onclick="adminLogin()">登录</button>
+    </div>
+  </div>
+
+  <!-- 管理界面 -->
+  <div class="admin-container" id="adminPage">
+    <div class="admin-header">
+      <div class="admin-title">Vidu批量生成工具 - 用户管理</div>
+      <button class="btn btn-danger btn-sm" onclick="adminLogout()">退出登录</button>
+    </div>
+    
+    <div class="admin-content">
+      <!-- 添加用户 -->
+      <div class="card">
+        <div class="card-title">添加用户</div>
+        <div class="error-msg" id="addError"></div>
+        <div class="form-group">
+          <label>用户名</label>
+          <input type="text" id="newUsername" placeholder="请输入用户名">
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input type="text" id="newPassword" placeholder="请输入密码">
+        </div>
+        <div class="form-group">
+          <label>有效期（天）</label>
+          <input type="number" id="newExpireDays" placeholder="如：30" value="30">
+        </div>
+        <button class="btn btn-success" onclick="addUser()">添加用户</button>
+        
+        <div class="api-info">
+          <h4>API配置信息</h4>
+          <p style="font-size:13px;color:#94a3b8;margin-bottom:12px;">将以下地址配置到插件中：</p>
+          <code id="loginApiUrl">登录API: 加载中...</code>
+          <code id="verifyApiUrl">验证API: 加载中...</code>
+        </div>
+      </div>
+      
+      <!-- 用户列表 -->
+      <div class="card">
+        <div class="card-title">用户列表</div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>用户名</th>
+                <th>状态</th>
+                <th>过期时间</th>
+                <th>创建时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="userTableBody">
+              <tr>
+                <td colspan="5" class="empty-state">暂无用户数据</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑用户弹窗 -->
+  <div class="modal-overlay" id="editModal">
+    <div class="modal">
+      <div class="modal-title">编辑用户</div>
+      <input type="hidden" id="editUserId">
+      <div class="form-group">
+        <label>新密码（留空不修改）</label>
+        <input type="text" id="editPassword" placeholder="留空则不修改密码">
+      </div>
+      <div class="form-group">
+        <label>延长有效期（天）</label>
+        <input type="number" id="editExpireDays" placeholder="从当前时间延长" value="30">
+      </div>
+      <div class="form-group">
+        <label>状态</label>
+        <select id="editStatus">
+          <option value="1">正常</option>
+          <option value="0">禁用</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="saveEditUser()">保存</button>
+        <button class="btn" style="background:#475569" onclick="closeEditModal()">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // API基础地址
+    const API_BASE = window.location.origin;
+    let adminToken = localStorage.getItem('adminToken') || '';
+    
+    // 初始化
+    document.addEventListener('DOMContentLoaded', () => {
+      // 更新API地址显示
+      document.getElementById('loginApiUrl').textContent = `登录API: ${API_BASE}/api/login`;
+      document.getElementById('verifyApiUrl').textContent = `验证API: ${API_BASE}/api/verify`;
+      
+      // 检查登录状态
+      checkAdminLogin();
+    });
+    
+    // 检查管理员登录状态
+    async function checkAdminLogin() {
+      if (!adminToken) {
+        showLoginPage();
+        return;
+      }
+      
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/check`, {
+          headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          showAdminPage();
+          loadUsers();
+        } else {
+          showLoginPage();
+        }
+      } catch (e) {
+        showLoginPage();
+      }
+    }
+    
+    // 管理员登录
+    async function adminLogin() {
+      const username = document.getElementById('adminUsername').value.trim();
+      const password = document.getElementById('adminPassword').value.trim();
+      const errorDiv = document.getElementById('loginError');
+      
+      if (!username || !password) {
+        errorDiv.textContent = '请输入账号和密码';
+        errorDiv.style.display = 'block';
+        return;
+      }
+      
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          adminToken = data.token;
+          localStorage.setItem('adminToken', adminToken);
+          showAdminPage();
+          loadUsers();
+        } else {
+          errorDiv.textContent = data.message || '登录失败';
+          errorDiv.style.display = 'block';
+        }
+      } catch (e) {
+        errorDiv.textContent = '网络错误，请稍后重试';
+        errorDiv.style.display = 'block';
+      }
+    }
+    
+    // 管理员退出
+    async function adminLogout() {
+      try {
+        await fetch(`${API_BASE}/api/admin/logout`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+      } catch (e) {}
+      
+      adminToken = '';
+      localStorage.removeItem('adminToken');
+      showLoginPage();
+    }
+    
+    // 加载用户列表
+    async function loadUsers() {
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/users`, {
+          headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          renderUserTable(data.users);
+        }
+      } catch (e) {
+        console.error('加载用户列表失败:', e);
+      }
+    }
+    
+    // 渲染用户表格
+    function renderUserTable(users) {
+      const tbody = document.getElementById('userTableBody');
+      
+      if (!users || users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">暂无用户数据</td></tr>';
+        return;
+      }
+      
+      tbody.innerHTML = users.map(user => {
+        const now = Date.now();
+        let statusClass = 'status-active';
+        let statusText = '正常';
+        
+        if (user.status === 0) {
+          statusClass = 'status-disabled';
+          statusText = '已禁用';
+        } else if (now > user.expireTime) {
+          statusClass = 'status-expired';
+          statusText = '已过期';
+        }
+        
+        return `
+          <tr>
+            <td>${user.username}</td>
+            <td class="${statusClass}">${statusText}</td>
+            <td>${formatTime(user.expireTime)}</td>
+            <td>${formatTime(user.createdAt)}</td>
+            <td>
+              <div class="actions">
+                <button class="btn btn-primary btn-sm" onclick="editUser('${user.id}')">编辑</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteUser('${user.id}')">删除</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+    
+    // 添加用户
+    async function addUser() {
+      const username = document.getElementById('newUsername').value.trim();
+      const password = document.getElementById('newPassword').value.trim();
+      const expireDays = parseInt(document.getElementById('newExpireDays').value) || 30;
+      const errorDiv = document.getElementById('addError');
+      
+      if (!username || !password) {
+        errorDiv.textContent = '请填写完整信息';
+        errorDiv.style.display = 'block';
+        return;
+      }
+      
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/users`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${adminToken}`
+          },
+          body: JSON.stringify({ username, password, expireDays })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          document.getElementById('newUsername').value = '';
+          document.getElementById('newPassword').value = '';
+          errorDiv.style.display = 'none';
+          loadUsers();
+          alert('添加成功！');
+        } else {
+          errorDiv.textContent = data.message || '添加失败';
+          errorDiv.style.display = 'block';
+        }
+      } catch (e) {
+        errorDiv.textContent = '网络错误';
+        errorDiv.style.display = 'block';
+      }
+    }
+    
+    // 编辑用户
+    function editUser(userId) {
+      document.getElementById('editUserId').value = userId;
+      document.getElementById('editPassword').value = '';
+      document.getElementById('editExpireDays').value = 30;
+      document.getElementById('editStatus').value = 1;
+      document.getElementById('editModal').style.display = 'flex';
+    }
+    
+    // 保存编辑
+    async function saveEditUser() {
+      const userId = document.getElementById('editUserId').value;
+      const password = document.getElementById('editPassword').value.trim();
+      const expireDays = parseInt(document.getElementById('editExpireDays').value) || 30;
+      const status = parseInt(document.getElementById('editStatus').value);
+      
+      const body = { expireDays, status };
+      if (password) body.password = password;
+      
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/users/${userId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${adminToken}`
+          },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          closeEditModal();
+          loadUsers();
+          alert('修改成功！');
+        } else {
+          alert(data.message || '修改失败');
+        }
+      } catch (e) {
+        alert('网络错误');
+      }
+    }
+    
+    // 关闭编辑弹窗
+    function closeEditModal() {
+      document.getElementById('editModal').style.display = 'none';
+    }
+    
+    // 删除用户
+    async function deleteUser(userId) {
+      if (!confirm('确定要删除这个用户吗？')) return;
+      
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/users/${userId}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          loadUsers();
+          alert('删除成功！');
+        } else {
+          alert(data.message || '删除失败');
+        }
+      } catch (e) {
+        alert('网络错误');
+      }
+    }
+    
+    // 显示登录页
+    function showLoginPage() {
+      document.getElementById('loginPage').style.display = 'flex';
+      document.getElementById('adminPage').style.display = 'none';
+    }
+    
+    // 显示管理页
+    function showAdminPage() {
+      document.getElementById('loginPage').style.display = 'none';
+      document.getElementById('adminPage').style.display = 'block';
+    }
+    
+    // 格式化时间
+    function formatTime(timestamp) {
+      if (!timestamp) return '-';
+      const date = new Date(timestamp);
+      return date.toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+    
+    // 回车登录
+    document.getElementById('adminPassword').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') adminLogin();
+    });
+  </script>
+</body>
+</html>
