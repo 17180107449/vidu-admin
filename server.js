@@ -30,9 +30,8 @@ async function connectDB() {
   }
   
   try {
-    console.log('正在连接 MongoDB...');
     await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 10000,
+      serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
       maxPoolSize: 10,
       minPoolSize: 1,
@@ -41,8 +40,9 @@ async function connectDB() {
     isConnected = true;
     console.log('MongoDB 连接成功');
   } catch (e) {
-    console.error('MongoDB 连接失败:', e.message);
+    console.error('MongoDB 连接失败:', e);
     isConnected = false;
+    // 不退出进程，等待下次请求重连
   }
 }
 
@@ -353,6 +353,36 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ========== 用户修改密码 ==========
+    if (url === '/api/change-password' && method === 'POST') {
+      const body = await parseBody(req);
+      const { username, newPassword } = body;
+      
+      if (!username || !newPassword) {
+        sendJson(res, { success: false, message: '用户名和新密码不能为空' });
+        return;
+      }
+      
+      if (newPassword.length < 6) {
+        sendJson(res, { success: false, message: '密码长度至少6位' });
+        return;
+      }
+      
+      const user = await User.findOne({ username });
+      
+      if (!user) {
+        sendJson(res, { success: false, message: '用户不存在' });
+        return;
+      }
+      
+      // 更新密码
+      user.password = newPassword;
+      await user.save();
+      
+      sendJson(res, { success: true, message: '密码修改成功' });
+      return;
+    }
+
     // 404
     sendJson(res, { success: false, message: '接口不存在' });
 
@@ -369,6 +399,7 @@ async function start() {
   server.listen(PORT, () => {
     console.log(`服务器运行在端口 ${PORT}`);
     console.log(`管理员账号: ${ADMIN.username}`);
+    console.log(`请设置环境变量 MONGODB_URI 为你的 MongoDB Atlas 连接字符串`);
   });
 }
 
