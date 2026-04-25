@@ -6,149 +6,138 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ========================
-// 数据库（永久不丢）
+// 数据库（升级！包含剧名、简介、集数、封面）
 // ========================
-const db = new Database('./unlocks.db', { verbose: console.log });
+const db = new Database('./dramas.db', { verbose: console.log });
 db.exec(`
+  CREATE TABLE IF NOT EXISTS dramas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    drama_id TEXT NOT NULL,        -- 短剧ID
+    title TEXT NOT NULL,           -- 剧名
+    intro TEXT,                    -- 简介
+    total_episodes INTEGER,        -- 总集数
+    cover TEXT,                    -- 封面链接
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS unlocks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     openid TEXT NOT NULL,
     drama_id TEXT NOT NULL,
     episode INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
+  );
 `);
 
 // ========================
-// 前端接口：解锁剧集
+// 1. 添加短剧（后台）
+// ========================
+app.post('/api/admin/drama/add', (req, res) => {
+  const { drama_id, title, intro, total_episodes, cover } = req.body;
+  db.prepare(`
+    INSERT INTO dramas (drama_id, title, intro, total_episodes, cover)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(drama_id, title, intro, total_episodes, cover);
+  res.json({ code: 0, msg: "添加成功" });
+});
+
+// ========================
+// 2. 获取所有短剧列表
+// ========================
+app.get('/api/dramas', (req, res) => {
+  const list = db.prepare("SELECT * FROM dramas ORDER BY id DESC").all();
+  res.json({ code: 0, list });
+});
+
+// ========================
+// 3. 解锁剧集（返回完整信息）
 // ========================
 app.post('/api/pay/unlock', (req, res) => {
   try {
     const { openid, drama_id, episode } = req.body;
 
-    if (!openid || !drama_id || !episode) {
-      return res.json({ code: -1, msg: '参数不完整' });
+    // 查询短剧信息
+    const drama = db.prepare("SELECT * FROM dramas WHERE drama_id = ?").get(drama_id);
+    if (!drama) {
+      return res.json({ code: -1, msg: "短剧不存在" });
     }
 
-    db.prepare('INSERT INTO unlocks (openid, drama_id, episode) VALUES (?, ?, ?)')
+    // 解锁
+    db.prepare("INSERT INTO unlocks (openid, drama_id, episode) VALUES (?, ?, ?)")
       .run(openid, drama_id, episode);
 
-    res.json({ code: 0, msg: '解锁成功' });
+    // 返回完整数据（你要的全部字段）
+    res.json({
+      code: 0,
+      msg: "解锁成功",
+      data: {
+        drama_id: drama.drama_id,
+        title: drama.title,        // 剧名
+        intro: drama.intro,        // 简介
+        total_episodes: drama.total_episodes, // 总集数
+        cover: drama.cover,        // 封面
+        unlock_episode: episode,   // 已解锁剧集
+        unlock_time: new Date().toLocaleString()
+      }
+    });
   } catch (e) {
-    res.json({ code: -1, msg: '解锁失败', error: e.message });
+    res.json({ code: -1, msg: "失败" });
   }
 });
 
 // ========================
-// 管理后台：查看所有记录
+// 4. 检查是否解锁
+// ========================
+app.post('/api/check/unlock', (req, res) => {
+  const { openid, drama_id, episode } = req.body;
+  const row = db.prepare("SELECT * FROM unlocks WHERE openid=? AND drama_id=? AND episode=?").get(openid, drama_id, episode);
+  res.json({ code: 0, unlocked: !!row });
+});
+
+// ========================
+// 管理后台
 // ========================
 app.get('/admin', (req, res) => {
-  const rows = db.prepare('SELECT * FROM unlocks ORDER BY id DESC').all();
+  const dramas = db.prepare("SELECT * FROM dramas ORDER BY id DESC").all();
   res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <title>短剧解锁管理后台</title>
-      <style>
-        body { padding: 20px; font-family: Arial; }
-        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-        th, td { border: 1px solid #ccc; padding: 10px; text-align: left; }
-        th { background: #f5f5f5; }
-        a { color: #007bff; text-decoration: none; }
-      </style>
-    </head>
-    <body>
-      <h1>短剧解锁管理后台</h1>
-      <p><a href="/admin/add">➕ 手动添加解锁记录</a></p>
-      <table>
+    <h1>短剧管理后台</h1>
+    <a href="/admin/drama/add">添加短剧</a>
+    <h3>短剧列表</h3>
+    <table border=1 cellpadding=8>
+      <tr><th>ID</th><th>剧名</th><th>封面</th><th>集数</th></tr>
+      ${dramas.map(d => `
         <tr>
-          <th>ID</th>
-          <th>用户ID</th>
-          <th>短剧ID</th>
-          <th>剧集</th>
-          <th>解锁时间</th>
+          <td>${d.drama_id}</td>
+          <td>${d.title}</td>
+          <td><img src="${d.cover}" width=50></td>
+          <td>${d.total_episodes}</td>
         </tr>
-        ${rows.map(row => `
-          <tr>
-            <td>${row.id}</td>
-            <td>${row.openid}</td>
-            <td>${row.drama_id}</td>
-            <td>${row.episode}</td>
-            <td>${row.created_at}</td>
-          </tr>
-        `).join('')}
-      </table>
-    </body>
-    </html>
+      `).join('')}
+    </table>
   `);
 });
 
-// ========================
-// 管理后台：添加解锁页面
-// ========================
-app.get('/admin/add', (req, res) => {
+// 添加短剧页面
+app.get('/admin/drama/add', (req, res) => {
   res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <title>添加解锁记录</title>
-      <style>
-        body { padding: 30px; font-family: Arial; }
-        input { width: 300px; padding: 8px; margin: 5px 0; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; }
-      </style>
-    </head>
-    <body>
-      <h1>手动添加解锁</h1>
-      <form action="/admin/add" method="POST">
-        用户ID（openid）：<br>
-        <input name="openid" required><br><br>
-
-        短剧ID（drama_id）：<br>
-        <input name="drama_id" required><br><br>
-
-        剧集号（episode）：<br>
-        <input name="episode" type="number" required><br><br>
-
-        <button type="submit">✅ 确认添加</button>
-      </form>
-      <br>
-      <a href="/admin">返回后台</a>
-    </body>
-    </html>
+    <h1>添加短剧</h1>
+    <form action="/api/admin/drama/add" method="POST">
+      短剧ID：<input name="drama_id" required><br><br>
+      剧名：<input name="title" required><br><br>
+      简介：<textarea name="intro"></textarea><br><br>
+      总集数：<input name="total_episodes" type="number" required><br><br>
+      封面链接：<input name="cover"><br><br>
+      <button>提交</button>
+    </form>
   `);
 });
 
-// 执行添加
-app.post('/admin/add', (req, res) => {
-  const { openid, drama_id, episode } = req.body;
-  db.prepare('INSERT INTO unlocks (openid, drama_id, episode) VALUES (?, ?, ?)')
-    .run(openid, drama_id, episode);
-  res.send(`
-    <h3>✅ 添加成功！</h3>
-    <a href="/admin">返回后台</a>
-  `);
-});
-
-// ========================
 // 首页
-// ========================
 app.get('/', (req, res) => {
-  res.send(`
-    <div style="padding:30px">
-      <h2>✅ 短剧后端服务运行正常</h2>
-      <p>接口地址：/api/pay/unlock</p>
-      <p>管理后台：<a href="/admin">/admin</a></p>
-    </div>
-  `);
+  res.send('✅ 服务运行正常<br><a href="/admin">后台</a>');
 });
 
-// ========================
-// 启动服务
-// ========================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 服务启动成功：端口 ${PORT}`);
+  console.log('服务启动');
 });
