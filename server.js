@@ -6,13 +6,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 内存数据库（Railway 100%兼容，不报错）
+// 内存数据库（Railway 100%兼容）
 let dramaList = [];
 // 支付订单 + 解锁记录
 let payOrderList = [];
 let unlockList = [];
 
-// 1. 获取短剧详情（视频号打开小程序调用）
+// 1. 获取短剧详情
 app.get('/api/drama/detail', (req, res) => {
   const { openid, drama_id } = req.query;
   if (!openid || !drama_id) return res.json({ code: -1, msg: '参数错误' });
@@ -46,19 +46,17 @@ app.get('/api/drama/detail', (req, res) => {
   });
 });
 
-// 2. 创建支付订单（小程序前端调用）
+// 2. 创建支付订单
 app.post('/api/drama/create-pay', (req, res) => {
   const { openid, drama_id, episode, amount } = req.body;
   if (!openid || !drama_id || !episode) return res.json({ code: -1 });
 
-  // 生成订单
   const orderNo = 'P' + Date.now();
   payOrderList.push({
     orderNo, openid, drama_id, episode, amount: amount || 1,
     status: 'unpaid', createTime: Date.now()
   });
 
-  // 返回给前端（真实环境这里调用微信支付SDK）
   res.json({
     code: 0,
     msg: '订单创建成功',
@@ -66,17 +64,14 @@ app.post('/api/drama/create-pay', (req, res) => {
   });
 });
 
-// 3. 支付成功回调 → 自动解锁剧集
+// 3. 支付成功回调
 app.post('/api/drama/pay-success', (req, res) => {
   const { orderNo } = req.body;
   const order = payOrderList.find(o => o.orderNo === orderNo);
   if (!order) return res.json({ code: -1, msg: '订单不存在' });
   if (order.status === 'paid') return res.json({ code: 0, msg: '已支付' });
 
-  // 修改订单状态
   order.status = 'paid';
-
-  // 自动解锁剧集
   const { openid, drama_id, episode } = order;
   const exists = unlockList.find(u =>
     u.openid === openid && u.drama_id === drama_id && u.episode === episode
@@ -88,7 +83,38 @@ app.post('/api/drama/pay-success', (req, res) => {
   res.json({ code: 0, msg: '支付成功，已解锁' });
 });
 
-// ================= 后台管理接口（不动） =================
+// 🔥 新增：模拟支付 一键解锁接口
+app.post('/api/pay/unlock', (req, res) => {
+  const { openid, drama_id, episode } = req.body;
+  if (!openid || !drama_id || !episode) {
+    return res.json({ code: -1, msg: '参数缺失' });
+  }
+
+  // 判断是否已解锁
+  const hasUnlock = unlockList.find(item =>
+    item.openid === openid &&
+    item.drama_id === drama_id &&
+    item.episode === episode
+  );
+
+  if (hasUnlock) {
+    return res.json({ code: 0, msg: '该集已解锁' });
+  }
+
+  // 模拟支付成功，加入解锁列表
+  unlockList.push({
+    openid,
+    drama_id,
+    episode
+  });
+
+  res.json({
+    code: 0,
+    msg: '解锁成功'
+  });
+});
+
+// ========== 后台管理接口（无修改） ==========
 app.get('/api/admin/drama/list', (req, res) => {
   res.json({ code: 0, data: dramaList });
 });
@@ -104,7 +130,7 @@ app.post('/api/admin/drama/delete', (req, res) => {
   res.json({ code: 0 });
 });
 
-// 后台页面
+// 后台静态页面
 app.use('/admin', express.static(path.join(__dirname, 'admin')));
 app.get('/', (req, res) => res.send('支付版短剧后端运行成功 ✅'));
 
