@@ -69,17 +69,19 @@ app.get("/api/drama/detail", async (req, res) => {
   }
 });
 
-// 解锁
+// 解锁接口（修正版）
 app.post("/api/pay/unlock", async (req, res) => {
   try {
     const { openid, drama_id, episode } = req.body;
+    // 修正 SQL 语法错误
     await pool.query(
-      "INSERT INTO unlocks (openid, drama_id, episode) VALUES ($1,$2,$3)",
+      "INSERT INTO unlocks (openid, drama_id, episode) VALUES ($1, $2, $3)",
       [openid, drama_id, episode]
     );
     res.json({ code: 0, msg: "解锁成功" });
   } catch (e) {
-    res.json({ code: -1 });
+    console.error("解锁接口错误:", e); // 打印错误日志，方便排查
+    res.json({ code: -1, msg: "解锁失败" });
   }
 });
 
