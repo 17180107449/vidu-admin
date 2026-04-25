@@ -1,406 +1,112 @@
-/**
- * Vidu批量生成工具 - 后台管理服务
- * 使用 MongoDB Atlas 持久化存储
- */
-
-const http = require('http');
-const crypto = require('crypto');
-const mongoose = require('mongoose');
-const fs = require('fs');
+const express = require('express');
+const cors = require('cors');
 const path = require('path');
 
-// 配置（支持环境变量）
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// 内存数据库（Railway 100%兼容，不报错）
+let dramaList = [];
+// 支付订单 + 解锁记录
+let payOrderList = [];
+let unlockList = [];
+
+// 1. 获取短剧详情（视频号打开小程序调用）
+app.get('/api/drama/detail', (req, res) => {
+  const { openid, drama_id } = req.query;
+  if (!openid || !drama_id) return res.json({ code: -1, msg: '参数错误' });
+
+  const drama = dramaList.find(s => s.drama_id === drama_id);
+  if (!drama) return res.json({ code: -2, msg: '短剧不存在' });
+
+  // 查询用户已解锁剧集
+  const userUnlocks = unlockList.filter(u =>
+    u.openid === openid && u.drama_id === drama_id
+  );
+  const unlockedEp = userUnlocks.map(u => u.episode);
+
+  const episodeStatus = [];
+  for (let i = 1; i <= drama.total; i++) {
+    let status = i <= drama.free_num ? 'free' : unlockedEp.includes(i) ? 'unlocked' : 'locked';
+    episodeStatus.push({ episode: i, status });
+  }
+
+  res.json({
+    code: 0,
+    data: {
+      cover: drama.cover,
+      title: drama.title,
+      total: drama.total,
+      type: drama.type,
+      desc: drama.desc,
+      free_num: drama.free_num,
+      episodeStatus
+    }
+  });
+});
+
+// 2. 创建支付订单（小程序前端调用）
+app.post('/api/drama/create-pay', (req, res) => {
+  const { openid, drama_id, episode, amount } = req.body;
+  if (!openid || !drama_id || !episode) return res.json({ code: -1 });
+
+  // 生成订单
+  const orderNo = 'P' + Date.now();
+  payOrderList.push({
+    orderNo, openid, drama_id, episode, amount: amount || 1,
+    status: 'unpaid', createTime: Date.now()
+  });
+
+  // 返回给前端（真实环境这里调用微信支付SDK）
+  res.json({
+    code: 0,
+    msg: '订单创建成功',
+    data: { orderNo }
+  });
+});
+
+// 3. 支付成功回调 → 自动解锁剧集
+app.post('/api/drama/pay-success', (req, res) => {
+  const { orderNo } = req.body;
+  const order = payOrderList.find(o => o.orderNo === orderNo);
+  if (!order) return res.json({ code: -1, msg: '订单不存在' });
+  if (order.status === 'paid') return res.json({ code: 0, msg: '已支付' });
+
+  // 修改订单状态
+  order.status = 'paid';
+
+  // 自动解锁剧集
+  const { openid, drama_id, episode } = order;
+  const exists = unlockList.find(u =>
+    u.openid === openid && u.drama_id === drama_id && u.episode === episode
+  );
+  if (!exists) {
+    unlockList.push({ openid, drama_id, episode });
+  }
+
+  res.json({ code: 0, msg: '支付成功，已解锁' });
+});
+
+// ================= 后台管理接口（不动） =================
+app.get('/api/admin/drama/list', (req, res) => {
+  res.json({ code: 0, data: dramaList });
+});
+app.post('/api/admin/drama/save', (req, res) => {
+  const item = req.body;
+  const idx = dramaList.findIndex(d => d.drama_id === item.drama_id);
+  if (idx >= 0) dramaList[idx] = item;
+  else dramaList.push(item);
+  res.json({ code: 0 });
+});
+app.post('/api/admin/drama/delete', (req, res) => {
+  dramaList = dramaList.filter(d => d.drama_id !== req.body.drama_id);
+  res.json({ code: 0 });
+});
+
+// 后台页面
+app.use('/admin', express.static(path.join(__dirname, 'admin')));
+app.get('/', (req, res) => res.send('支付版短剧后端运行成功 ✅'));
+
 const PORT = process.env.PORT || 3000;
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/vidu-admin';
-
-// 管理员账号（优先使用环境变量）
-const ADMIN = {
-  username: process.env.ADMIN_USER || 'admin',
-  password: process.env.ADMIN_PASS || 'admin123'
-};
-
-// MongoDB 连接
-let isConnected = false;
-
-async function connectDB() {
-  // 检查 mongoose 连接状态
-  if (mongoose.connection.readyState === 1) {
-    isConnected = true;
-    return;
-  }
-  
-  try {
-    await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-      maxPoolSize: 10,
-      minPoolSize: 1,
-      connectTimeoutMS: 10000
-    });
-    isConnected = true;
-    console.log('MongoDB 连接成功');
-  } catch (e) {
-    console.error('MongoDB 连接失败:', e);
-    isConnected = false;
-    // 不退出进程，等待下次请求重连
-  }
-}
-
-// 监听连接事件
-mongoose.connection.on('disconnected', () => {
-  console.log('MongoDB 连接断开');
-  isConnected = false;
-});
-
-mongoose.connection.on('error', (err) => {
-  console.error('MongoDB 连接错误:', err);
-  isConnected = false;
-});
-
-mongoose.connection.on('reconnected', () => {
-  console.log('MongoDB 重新连接成功');
-  isConnected = true;
-});
-
-// 定义 Schema
-const userSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  expireTime: { type: Number, required: true },
-  status: { type: Number, default: 1 },
-  createdAt: { type: Number, default: Date.now }
-});
-
-const adminSessionSchema = new mongoose.Schema({
-  token: { type: String, required: true, unique: true },
-  createdAt: { type: Number, default: Date.now }
-});
-
-// 创建模型
-const User = mongoose.model('User', userSchema);
-const AdminSession = mongoose.model('AdminSession', adminSessionSchema);
-
-// 生成Token
-function generateToken() {
-  return crypto.randomBytes(32).toString('hex');
-}
-
-// 解析请求体
-function parseBody(req) {
-  return new Promise((resolve) => {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
-        resolve({});
-      }
-    });
-  });
-}
-
-// 返回JSON
-function sendJson(res, data) {
-  res.writeHead(200, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-  });
-  res.end(JSON.stringify(data));
-}
-
-// 检查管理员Token
-async function checkAdminToken(req) {
-  const auth = req.headers.authorization || '';
-  const token = auth.replace('Bearer ', '');
-  
-  const session = await AdminSession.findOne({ token });
-  return !!session;
-}
-
-// 创建HTTP服务器
-const server = http.createServer(async (req, res) => {
-  const url = req.url.split('?')[0];
-  const method = req.method;
-
-  // 处理OPTIONS预检
-  if (method === 'OPTIONS') {
-    res.writeHead(200, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-    });
-    res.end();
-    return;
-  }
-
-  // ========== 首页和静态文件 ==========
-  if (url === '/' || url === '/index.html') {
-    const indexPath = path.join(__dirname, 'index.html');
-    fs.readFile(indexPath, (err, data) => {
-      if (err) {
-        res.writeHead(404);
-        res.end('Not found');
-        return;
-      }
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8'
-      });
-      res.end(data);
-    });
-    return;
-  }
-
-  // 确保数据库连接
-  await connectDB();
-
-  // 路由处理
-  try {
-    // ========== 管理员登录 ==========
-    if (url === '/api/admin/login' && method === 'POST') {
-      const body = await parseBody(req);
-      
-      if (body.username === ADMIN.username && body.password === ADMIN.password) {
-        const token = generateToken();
-        
-        // 删除旧session，创建新session
-        await AdminSession.deleteMany({});
-        await AdminSession.create({ token });
-        
-        sendJson(res, { success: true, token });
-      } else {
-        sendJson(res, { success: false, message: '用户名或密码错误' });
-      }
-      return;
-    }
-
-    // ========== 检查管理员登录状态 ==========
-    if (url === '/api/admin/check' && method === 'GET') {
-      const isValid = await checkAdminToken(req);
-      sendJson(res, { success: isValid });
-      return;
-    }
-
-    // ========== 管理员退出 ==========
-    if (url === '/api/admin/logout' && method === 'POST') {
-      const auth = req.headers.authorization || '';
-      const token = auth.replace('Bearer ', '');
-      await AdminSession.deleteOne({ token });
-      sendJson(res, { success: true });
-      return;
-    }
-
-    // ========== 获取用户列表 ==========
-    if (url === '/api/admin/users' && method === 'GET') {
-      if (!await checkAdminToken(req)) {
-        sendJson(res, { success: false, message: '未登录' });
-        return;
-      }
-      
-      const users = await User.find({}, { password: 0 });
-      const userList = users.map(u => ({
-        id: u._id.toString(),
-        username: u.username,
-        expireTime: u.expireTime,
-        status: u.status,
-        createdAt: u.createdAt
-      }));
-      
-      sendJson(res, { success: true, users: userList });
-      return;
-    }
-
-    // ========== 添加用户 ==========
-    if (url === '/api/admin/users' && method === 'POST') {
-      if (!await checkAdminToken(req)) {
-        sendJson(res, { success: false, message: '未登录' });
-        return;
-      }
-      
-      const body = await parseBody(req);
-      const { username, password, expireDays } = body;
-      
-      if (!username || !password || !expireDays) {
-        sendJson(res, { success: false, message: '参数不完整' });
-        return;
-      }
-      
-      // 检查用户名是否已存在
-      const existing = await User.findOne({ username });
-      if (existing) {
-        sendJson(res, { success: false, message: '用户名已存在' });
-        return;
-      }
-      
-      // 创建用户
-      const user = await User.create({
-        username,
-        password,
-        expireTime: Date.now() + expireDays * 24 * 60 * 60 * 1000,
-        status: 1,
-        createdAt: Date.now()
-      });
-      
-      sendJson(res, { success: true, message: '添加成功', user: { id: user._id.toString(), username: user.username } });
-      return;
-    }
-
-    // ========== 修改用户 ==========
-    if (url.startsWith('/api/admin/users/') && method === 'PUT') {
-      if (!await checkAdminToken(req)) {
-        sendJson(res, { success: false, message: '未登录' });
-        return;
-      }
-      
-      const userId = url.split('/')[4];
-      const body = await parseBody(req);
-      const { password, expireDays, status } = body;
-      
-      const updateData = {};
-      if (password) updateData.password = password;
-      if (expireDays) updateData.expireTime = Date.now() + expireDays * 24 * 60 * 60 * 1000;
-      if (status !== undefined) updateData.status = status;
-      
-      await User.findByIdAndUpdate(userId, updateData);
-      
-      sendJson(res, { success: true, message: '修改成功' });
-      return;
-    }
-
-    // ========== 删除用户 ==========
-    if (url.startsWith('/api/admin/users/') && method === 'DELETE') {
-      if (!await checkAdminToken(req)) {
-        sendJson(res, { success: false, message: '未登录' });
-        return;
-      }
-      
-      const userId = url.split('/')[4];
-      await User.findByIdAndDelete(userId);
-      
-      sendJson(res, { success: true, message: '删除成功' });
-      return;
-    }
-
-    // ========== 用户登录验证 ==========
-    if (url === '/api/login' && method === 'POST') {
-      const body = await parseBody(req);
-      const { username, password } = body;
-      
-      if (!username || !password) {
-        sendJson(res, { success: false, message: '请输入用户名和密码' });
-        return;
-      }
-      
-      const user = await User.findOne({ username, password });
-      
-      if (!user) {
-        sendJson(res, { success: false, message: '用户名或密码错误' });
-        return;
-      }
-      
-      if (user.status !== 1) {
-        sendJson(res, { success: false, message: '账号已被禁用' });
-        return;
-      }
-      
-      if (Date.now() > user.expireTime) {
-        sendJson(res, { success: false, message: '账号已过期' });
-        return;
-      }
-      
-      sendJson(res, { 
-        success: true, 
-        token: generateToken(),
-        expireTime: user.expireTime,
-        username: user.username
-      });
-      return;
-    }
-
-    // ========== Token验证 ==========
-    if (url === '/api/verify' && method === 'POST') {
-      const body = await parseBody(req);
-      const { username } = body;
-      
-      if (!username) {
-        sendJson(res, { success: false, message: '缺少用户名' });
-        return;
-      }
-      
-      const user = await User.findOne({ username });
-      
-      if (!user) {
-        sendJson(res, { success: false, message: '用户不存在' });
-        return;
-      }
-      
-      if (user.status !== 1) {
-        sendJson(res, { success: false, message: '账号已被禁用' });
-        return;
-      }
-      
-      if (Date.now() > user.expireTime) {
-        sendJson(res, { success: false, message: '账号已过期' });
-        return;
-      }
-      
-      sendJson(res, { 
-        success: true, 
-        expireTime: user.expireTime
-      });
-      return;
-    }
-
-    // ========== 用户修改密码 ==========
-    if (url === '/api/change-password' && method === 'POST') {
-      const body = await parseBody(req);
-      const { username, newPassword } = body;
-      
-      if (!username || !newPassword) {
-        sendJson(res, { success: false, message: '用户名和新密码不能为空' });
-        return;
-      }
-      
-      if (newPassword.length < 6) {
-        sendJson(res, { success: false, message: '密码长度至少6位' });
-        return;
-      }
-      
-      const user = await User.findOne({ username });
-      
-      if (!user) {
-        sendJson(res, { success: false, message: '用户不存在' });
-        return;
-      }
-      
-      // 更新密码
-      user.password = newPassword;
-      await user.save();
-      
-      sendJson(res, { success: true, message: '密码修改成功' });
-      return;
-    }
-
-    // 404
-    sendJson(res, { success: false, message: '接口不存在' });
-
-  } catch (e) {
-    console.error('请求处理错误:', e);
-    sendJson(res, { success: false, message: '服务器错误' });
-  }
-});
-
-// 启动服务器
-async function start() {
-  await connectDB();
-  
-  server.listen(PORT, () => {
-    console.log(`服务器运行在端口 ${PORT}`);
-    console.log(`管理员账号: ${ADMIN.username}`);
-    console.log(`请设置环境变量 MONGODB_URI 为你的 MongoDB Atlas 连接字符串`);
-  });
-}
-
-start();
+app.listen(PORT, () => console.log('服务启动成功'));
