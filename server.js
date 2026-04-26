@@ -30,59 +30,97 @@ CREATE TABLE IF NOT EXISTS user_unlock (
 `);
 
 // ==========================================
-// 【小程序接口：全部齐全】
+// 【小程序接口】
 // ==========================================
 
-// 1. 短剧列表（小程序用）
+// 1. 短剧列表
 app.get('/api/dramas', (req, res) => {
   const list = db.prepare("SELECT * FROM dramas ORDER BY id DESC").all();
   res.json({ code: 0, list });
 });
 
-// 2. 短剧详情
+// 2. 短剧详情 + 返回用户已解锁剧集
 app.post('/api/drama/info', (req, res) => {
-  const { drama_id } = req.body;
-  const info = db.prepare("SELECT * FROM dramas WHERE drama_id = ?").get(drama_id);
-  res.json({ code: 0, data: info || null });
+  const { drama_id, openid } = req.body;
+
+  const drama = db.prepare("SELECT * FROM dramas WHERE drama_id = ?").get(drama_id);
+  if (!drama) {
+    return res.json({ code: -1, data: null });
+  }
+
+  // 查询该用户已解锁的集数
+  const unlockRows = db.prepare(`
+    SELECT episode FROM user_unlock
+    WHERE openid = ? AND drama_id = ?
+  `).all(openid, drama_id);
+
+  const unlock_list = unlockRows.map(r => r.episode);
+
+  res.json({
+    code: 0,
+    data: {
+      title: drama.title,
+      cover: drama.cover,
+      intro: drama.intro,
+      total_episodes: drama.total_episodes,
+      unlock_list: unlock_list
+    }
+  });
 });
 
-// 3. 解锁剧集
+// 3. 解锁单集
 app.post('/api/pay/unlock', (req, res) => {
   const { openid, drama_id, episode } = req.body;
   if (!openid || !drama_id || !episode) {
     return res.json({ code: -1, msg: "参数不完整" });
   }
 
-  const drama = db.prepare("SELECT * FROM dramas WHERE drama_id = ?").get(drama_id);
-  if (!drama) return res.json({ code: -1, msg: "短剧不存在" });
+  const exist = db.prepare(`
+    SELECT * FROM user_unlock
+    WHERE openid=? AND drama_id=? AND episode=?
+  `).get(openid, drama_id, episode);
 
-  db.prepare("INSERT INTO user_unlock (openid, drama_id, episode) VALUES (?,?,?)")
-    .run(openid, drama_id, episode);
+  if (exist) {
+    return res.json({ code: 0, msg: "已经解锁过" });
+  }
 
-  res.json({
-    code: 0,
-    msg: "解锁成功",
-    data: {
-      drama_id: drama.drama_id,
-      title: drama.title,
-      intro: drama.intro,
-      total_episodes: drama.total_episodes,
-      cover: drama.cover,
-      unlock_episode: episode
-    }
-  });
+  db.prepare(`
+    INSERT INTO user_unlock (openid, drama_id, episode)
+    VALUES (?,?,?)
+  `).run(openid, drama_id, episode);
+
+  res.json({ code: 0, msg: "解锁成功" });
 });
 
-// 4. 检查是否解锁
-app.post('/api/check/unlock', (req, res) => {
-  const { openid, drama_id, episode } = req.body;
-  const row = db.prepare("SELECT * FROM user_unlock WHERE openid=? AND drama_id=? AND episode=?")
-    .get(openid, drama_id, episode);
-  res.json({ code: 0, is_unlock: !!row });
+// 4. 解锁全集
+app.post('/api/pay/unlockAll', (req, res) => {
+  const { openid, drama_id } = req.body;
+
+  const drama = db.prepare("SELECT * FROM dramas WHERE drama_id=?").get(drama_id);
+  if (!drama) return res.json({ code: -1, msg: "短剧不存在" });
+
+  const total = drama.total_episodes;
+
+  // 从第3集开始解锁全集
+  for (let ep = 3; ep <= total; ep++) {
+    const exist = db.prepare(`
+      SELECT * FROM user_unlock
+      WHERE openid=? AND drama_id=? AND episode=?
+    `).get(openid, drama_id, ep);
+
+    if (!exist) {
+      db.prepare(`
+        INSERT INTO user_unlock (openid, drama_id, episode)
+        VALUES (?,?,?)
+      `).run(openid, drama_id, ep);
+    }
+  }
+
+  res.json({ code: 0, msg: "解锁全集成功" });
 });
 
 // ==========================================
-// 【管理后台】
+// 管理后台
 // ==========================================
 app.get("/admin", (req, res) => {
   const dramas = db.prepare("SELECT * FROM dramas ORDER BY id DESC").all();
@@ -161,5 +199,5 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("服务启动成功");
+  console.log("服务启动成功 http://localhost:" + PORT);
 });
